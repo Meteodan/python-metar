@@ -1365,7 +1365,7 @@ class ASOSfivemin(Metar):
           ngroup = len(ASOSfivemin.handlers)
           igroup = 0
           ifailed = -1
-          while igroup < ngroup and code: 
+          while igroup < ngroup and code:
               pattern, handler, repeatable = ASOSfivemin.handlers[igroup]
               if debug: print(handler.__name__,":",code)
               m = pattern.match(code)
@@ -1377,7 +1377,7 @@ class ASOSfivemin(Metar):
                   if self._trend:
                       code = self._do_trend_handlers(code)
                   if not repeatable: break
-      
+
                   if debug: print(handler.__name__,":",code)
                   m = pattern.match(code)
               if not m and ifailed < 0:
@@ -1410,8 +1410,8 @@ class ASOSfivemin(Metar):
           raise err
         if self._unparsed_groups:
           code = ' '.join(self._unparsed_groups)
-          print "Unparsed groups in body: "+code
-    
+          print("Unparsed groups in body: "+code)
+
     def _handleHeader( self, d ):
         """
         Parse the header group.
@@ -1419,7 +1419,7 @@ class ASOSfivemin(Metar):
         The following attributes are set:
           header   [string]
         """
-        self.header = d['header'] 
+        self.header = d['header']
 
     def _handlePaltitude( self, d ):
         """
@@ -1433,12 +1433,12 @@ class ASOSfivemin(Metar):
     def _handleRH( self, d ):
         """
         Parse the relative humidity group.
-        
+
         The following attributes are set:
             rh [int]
         """
         self.rh = int(d['rh'])
-    
+
     def _handleDaltitude( self, d ):
         """
         Parse the density altitude group.
@@ -1447,7 +1447,7 @@ class ASOSfivemin(Metar):
           daltitude   [int]
         """
         self.daltitude = int(d['daltitude'])
-    
+
     def _handleMagwind( self, d ):
         """
         Parse the magnetic wind and variable-wind groups.
@@ -1461,11 +1461,11 @@ class ASOSfivemin(Metar):
         """
         mwind_dir = d['mdir'].replace('O','0')
         if mwind_dir != "VRB" and mwind_dir != "///" and mwind_dir != "MMM":
-          self.mwind_dir = direction(mwind_dir)    
+          self.mwind_dir = direction(mwind_dir)
         mwind_speed = d['mspeed'].replace('O','0')
         units = 'KT'
 #         units = d['units']
-#         if units == 'KTS' or units == 'K' or units == 'T' or units == 'LT': 
+#         if units == 'KTS' or units == 'K' or units == 'T' or units == 'LT':
 #           units = 'KT'
         if mwind_speed.startswith("P"):
           self.mwind_speed = speed(mwind_speed[1:], units, ">")
@@ -1479,20 +1479,20 @@ class ASOSfivemin(Metar):
               self.mwind_gust = speed(mwind_gust, units)
         if d['mvarfrom']:
           self.mwind_dir_from = direction(d['mvarfrom'])
-          self.mwind_dir_to = direction(d['mvarto'])      
+          self.mwind_dir_to = direction(d['mvarto'])
 
-        
+
     ## the list of handler functions to use (in order) to process an ASOS 5-MIN report
 
-    handlers = [ (HEADER_RE, _handleHeader, False), 
-               (STATION_RE, Metar._handleStation, False), 
-               (TIME_RE, Metar._handleTime, False), 
-               (MODIFIER_RE, Metar._handleModifier, False), 
-               (WIND_RE, Metar._handleWind, False), 
-               (VISIBILITY_RE, Metar._handleVisibility, True), 
-               (WEATHER_RE, Metar._handleWeather, True), 
-               (SKY_RE, Metar._handleSky, True), 
-               (TEMP_RE, Metar._handleTemp, False), 
+    handlers = [ (HEADER_RE, _handleHeader, False),
+               (STATION_RE, Metar._handleStation, False),
+               (TIME_RE, Metar._handleTime, False),
+               (MODIFIER_RE, Metar._handleModifier, False),
+               (WIND_RE, Metar._handleWind, False),
+               (VISIBILITY_RE, Metar._handleVisibility, True),
+               (WEATHER_RE, Metar._handleWeather, True),
+               (SKY_RE, Metar._handleSky, True),
+               (TEMP_RE, Metar._handleTemp, False),
                (PRESS_RE, Metar._handlePressure, False),
                (PALTITUDE_RE, _handlePaltitude, False),
                (RH_RE, _handleRH, False),
