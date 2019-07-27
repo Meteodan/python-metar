@@ -150,10 +150,16 @@ ICE_ACCRETION_RE = re.compile(
 
 ## regular expressions unique to ASOS 5-min records
 
-HEADER_RE = re.compile(r"""^(?P<header>\d\d\d\d\d[A-Z][A-Z0-9]{3}\s+
-                         [A-Z0-9]{3,4}\d{12}\d{3}
+# HEADER_RE = re.compile(r"""^(?P<header>\d\d\d\d\d[A-Z][A-Z0-9]{3}\s+
+#                          [A-Z0-9]{3,4}\d{12}\d{3}
+#                          \d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+
+#                          5-MIN)\s+""",re.VERBOSE)
+
+HEADER_RE = re.compile(r"""^(?P<header>\d\d\d\d\d[A-Z][A-Z0-9]{3})\s+
+                         [A-Z0-9]{3,4}(?P<lst_year>\d{4})(?P<lst_month>\d{2})(?P<lst_day>\d{2})
+                         (?P<lst_hour>\d{2})(?P<lst_min>\d{2})\d{3}
                          \d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+
-                         5-MIN)\s+""",re.VERBOSE)
+                         5-MIN\s+""",re.VERBOSE)
 
 PALTITUDE_RE = re.compile(r"""^(?P<paltitude>\d\d\d)\s+""",re.VERBOSE)
 
@@ -311,6 +317,7 @@ def _unparsedGroup( self, d ):
 # METAR report objects
 
 debug = False
+verbose = False
 
 class Metar(object):
     """METAR (aviation meteorology report)"""
@@ -1298,10 +1305,11 @@ class Metar(object):
 
 class ASOSfivemin(Metar):
     """ASOS 5-min data file (DATA SET 6401)"""
-    def __init__( self, ASOSfivemincode, month=None, year=None, utcdelta=None):
+    def __init__( self, ASOSfivemincode, month=None, year=None, utcdelta=None, strict=True):
         """Parse raw ASOS 5-min code."""
         self.code = ASOSfivemincode           # original cocde
         self.type = 'ASOSfivemin'             # ASOSfivemin
+        self.correction = None             # COR (corrected - WMO spec)
         self.mod = "AUTO"                  # AUTO (automatic) or COR (corrected)
         self.header = None                 # Header portion of each record
         self.station_id = None             # 4-character ICAO station code
@@ -1345,6 +1353,9 @@ class ASOSfivemin(Metar):
         self.precip_3hr = None             # precipitation over the last 3 hours
         self.precip_6hr = None             # precipitation over the last 6 hours
         self.precip_24hr = None            # precipitation over the last 24 hours
+        self.ice_accretion_1hr = None      # ice accretion over the past hour
+        self.ice_accretion_3hr = None      # ice accretion over the past 3 hours
+        self.ice_accretion_6hr = None      # ice accretion over the past 6 hours
         self._trend = False                # trend groups present (bool)
         self._trend_groups = []            # trend forecast groups
         self._remarks = []                 # remarks (list of strings)
@@ -1360,66 +1371,119 @@ class ASOSfivemin(Metar):
         self._month = month
         self._year = year
 
-        code = self.code+" "    # (the regexps all expect trailing spaces...)
+        # Do some string prep before parsing
+        code = _sanitize(self.code)
         try:
-          ngroup = len(ASOSfivemin.handlers)
-          igroup = 0
-          ifailed = -1
-          while igroup < ngroup and code:
-              pattern, handler, repeatable = ASOSfivemin.handlers[igroup]
-              if debug: print(handler.__name__,":",code)
-              m = pattern.match(code)
-              while m:
-                  ifailed = -1
-                  if debug: _report_match(handler,m.group())
-                  handler(self,m.groupdict())
-                  code = code[m.end():]
-                  if self._trend:
-                      code = self._do_trend_handlers(code)
-                  if not repeatable: break
+            ngroup = len(self.handlers)
+            igroup = 0
+            ifailed = -1
+            while igroup < ngroup and code:
+                pattern, handler, repeatable = self.handlers[igroup]
+                if debug:
+                    _logger.debug("%s: %s", handler.__name__, code)
+                m = pattern.match(code)
+                while m:
+                    ifailed = -1
+                    if debug:
+                        _report_match(handler, m.group())
+                    handler(self,m.groupdict())
+                    code = code[m.end():]
+                    if self._trend:
+                        code = self._do_trend_handlers(code)
+                    if not repeatable:
+                        break
 
-                  if debug: print(handler.__name__,":",code)
-                  m = pattern.match(code)
-              if not m and ifailed < 0:
-                  ifailed = igroup
-              igroup += 1
-              if igroup == ngroup and not m:
-                  # print("** it's not a main-body group **")
-                  pattern, handler = (UNPARSED_RE, _unparsedGroup)
-                  if debug: print(handler.__name__,":",code)
-                  m = pattern.match(code)
-                  if debug: _report_match(handler,m.group())
-                  handler(self,m.groupdict())
-                  code = code[m.end():]
-                  igroup = ifailed
-                  ifailed = -2  # if it's still -2 when we run out of main-body
-                                #  groups, we'll try parsing this group as a remark
-          if pattern == REMARK_RE or self.press:
-              while code:
-                  for pattern, handler in ASOSfivemin.remark_handlers:
-                      if debug: print(handler.__name__,":",code)
-                      m = pattern.match(code)
-                      if m:
-                          if debug: _report_match(handler,m.group())
-                          handler(self,m.groupdict())
-                          code = pattern.sub("",code,1)
-                          break
+                    if debug:
+                        _logger.debug("%s: %s", handler.__name__, code)
+                    m = pattern.match(code)
+                if not m and ifailed < 0:
+                    ifailed = igroup
+                igroup += 1
+                if igroup == ngroup and not m:
+                    pattern, handler = (UNPARSED_RE, _unparsedGroup)
+                    if debug:
+                        _logger.debug("%s: %s", handler.__name__, code)
+                    m = pattern.match(code)
+                    if debug:
+                        _report_match(handler, m.group())
+                    handler(self,m.groupdict())
+                    code = code[m.end():]
+                    igroup = ifailed
+                    ifailed = -2  # if it's still -2 when we run out of main-body
+                                  #  groups, we'll try parsing this group as a remark
+            if pattern == REMARK_RE or self.press:
+                while code:
+                    for pattern, handler in self.remark_handlers:
+                        if debug:
+                            _logger.debug("%s: %s", handler.__name__, code)
+                        m = pattern.match(code)
+                        if m:
+                            if debug:
+                                _report_match(handler, m.group())
+                            handler(self,m.groupdict())
+                            code = pattern.sub("",code,1)
+                            break
 
         except Exception as err:
-          raise ParserError(handler.__name__+" failed while processing '"+code+"'\n"+" ".join(err.args))
-          raise err
+            message = (
+                ("%s failed while processing '%s'\n\t%s"
+                 ) % (handler.__name__, code, "\n\t".join(err.args))
+            )
+            if strict:
+                raise ParserError(message)
+            else:
+                warnings.warn(message, RuntimeWarning)
+
         if self._unparsed_groups:
-          code = ' '.join(self._unparsed_groups)
-          print("Unparsed groups in body: "+code)
+            code = ' '.join(self._unparsed_groups)
+            message = "Unparsed groups in body '%s' while processing '%s'" % (code, ASOSfivemincode)
+            # DTD: should have a separate flag for unparsed groups. Less serious error than a
+            # parsing failure
+#             if strict:
+#                 raise ParserError(message)
+            if verbose:
+                warnings.warn(message, RuntimeWarning)
+
+        # Set time to the LST time information
+        self.time = self.lst_time
+
 
     def _handleHeader( self, d ):
         """
-        Parse the header group.
+        Parse the header group, which includes the date and time information (in LST!).
 
         The following attributes are set:
           header   [string]
+          lst_time     [datetime]
+          _lst_year    [int]
+          _lst_month   [int]
+          _lst_day   [int]
+          _lst_hour  [int]
+          _lst_min   [int]
         """
-        self.header = d['header']
+        self._lst_year = int(d['lst_year'])
+        self._lst_month = int(d['lst_month'])
+        self._lst_day = int(d['lst_day'])
+        self._lst_hour = int(d['lst_hour'])
+        self._lst_min = int(d['lst_min'])
+
+        self.lst_time = datetime.datetime(self._lst_year, self._lst_month, self._lst_day,
+                                          self._lst_hour, self._lst_min)
+
+
+    def _handleTime( self, d ):
+        """
+        Parse the observation-time group.
+
+        For now, this does nothing, as UTC conversion is handled in calling program.
+        """
+        self._year = self._lst_year
+        self._month = self._lst_month
+        self._day = self._lst_day
+        self._hour = self._lst_hour
+        self._min = self._lst_min
+        self.time = self.lst_time
+
 
     def _handlePaltitude( self, d ):
         """
@@ -1486,7 +1550,7 @@ class ASOSfivemin(Metar):
 
     handlers = [ (HEADER_RE, _handleHeader, False),
                (STATION_RE, Metar._handleStation, False),
-               (TIME_RE, Metar._handleTime, False),
+               (TIME_RE, _handleTime, False),
                (MODIFIER_RE, Metar._handleModifier, False),
                (WIND_RE, Metar._handleWind, False),
                (VISIBILITY_RE, Metar._handleVisibility, True),
