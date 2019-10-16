@@ -321,8 +321,14 @@ class direction(object):
         else:
             self._compass = None
             value = float(d)
-            if value < 0.0 or value > 360.0:
-                raise ValueError("direction must be 0..360: '"+str(value)+"'")
+            # DTD: change this so that values less than 0 are set to 0
+            # and values greater than 360 are set to 360
+            if value < 0.0:
+                value = 0.0
+            elif value > 360.:
+                value = 360.
+#             if value < 0.0 or value > 360.0:
+#                 raise ValueError("direction must be 0..360: '"+str(value)+"'")
             self._degrees = value
 
     def __str__(self):

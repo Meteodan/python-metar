@@ -148,6 +148,30 @@ ICE_ACCRETION_RE = re.compile(
     r"^I(?P<ice_accretion_hours>[136])(?P<ice_accretion_depth>\d\d\d)\s+"
 )
 
+## regular expressions unique to ASOS 5-min records
+
+# HEADER_RE = re.compile(r"""^(?P<header>\d\d\d\d\d[A-Z][A-Z0-9]{3}\s+
+#                          [A-Z0-9]{3,4}\d{12}\d{3}
+#                          \d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+
+#                          5-MIN)\s+""",re.VERBOSE)
+
+HEADER_RE = re.compile(r"""^(?P<header>\d\d\d\d\d[A-Z][A-Z0-9]{3})\s+
+                         [A-Z0-9]{3,4}(?P<lst_year>\d{4})(?P<lst_month>\d{2})(?P<lst_day>\d{2})
+                         (?P<lst_hour>\d{2})(?P<lst_min>\d{2})\d{3}
+                         \d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+
+                         5-MIN\s+""",re.VERBOSE)
+
+PALTITUDE_RE = re.compile(r"""^(?P<paltitude>\d\d\d)\s+""",re.VERBOSE)
+
+RH_RE = re.compile(r"""^(?P<rh>\d\d)\s+""",re.VERBOSE)
+
+DALTITUDE_RE = re.compile(r"""^(?P<daltitude>\d{1,4})\s+""",re.VERBOSE)
+
+MAGWIND_RE = re.compile(r"""^(?P<mdir>[\dO]{3}|[0O]|///|MMM|VRB)/
+                          (?P<mspeed>P?[\dO]{2,3}|[/M]{2,3})
+                        (G(?P<mgust>P?(\d{1,3}|[/M]{1,3})))?
+                      (\s+(?P<mvarfrom>\d\d\d)V
+                          (?P<mvarto>\d\d\d))?\s+""",re.VERBOSE)
 
 # translation of weather location codes
 loc_terms = [
@@ -293,6 +317,7 @@ def _unparsedGroup( self, d ):
 # METAR report objects
 
 debug = False
+verbose = False
 
 class Metar(object):
     """METAR (aviation meteorology report)"""
@@ -1277,3 +1302,264 @@ class Metar(object):
         Return the decoded remarks.
         """
         return sep.join(self._remarks)
+
+class ASOSfivemin(Metar):
+    """ASOS 5-min data file (DATA SET 6401)"""
+    def __init__( self, ASOSfivemincode, month=None, year=None, utcdelta=None, strict=True):
+        """Parse raw ASOS 5-min code."""
+        self.code = ASOSfivemincode           # original cocde
+        self.type = 'ASOSfivemin'             # ASOSfivemin
+        self.correction = None             # COR (corrected - WMO spec)
+        self.mod = "AUTO"                  # AUTO (automatic) or COR (corrected)
+        self.header = None                 # Header portion of each record
+        self.station_id = None             # 4-character ICAO station code
+        self.time = None                   # observation time [datetime]
+        self.cycle = None                  # observation cycle (0-23) [int]
+        self.wind_dir = None               # wind direction [direction]
+        self.wind_speed = None             # wind speed [speed]
+        self.wind_gust = None              # wind gust speed [speed]
+        self.wind_dir_from = None          # beginning of range for win dir [direction]
+        self.wind_dir_to = None            # end of range for wind dir [direction]
+        self.vis = None                    # visibility [distance]
+        self.vis_dir = None                # visibility direction [direction]
+        self.max_vis = None                # visibility [distance]
+        self.max_vis_dir = None            # visibility direction [direction]
+        self.temp = None                   # temperature (C) [temperature]
+        self.dewpt = None                  # dew point (C) [temperature]
+        self.press = None                  # barometric pressure [pressure]
+        self.paltitude = None              # pressure altitude [int]
+        self.rh = None                     # relative humidity [int]
+        self.daltitude = None              # density altitude [int]
+        self.mwind_dir = None              # magnetic wind direction [direction]
+        self.mwind_speed = None            # wind speed (in magnetic group) [speed]
+        self.mwind_gust = None             # wind gust (in magnetic group) [speed]
+        self.mwind_dir_from = None         # beginning of range for win dir (in magnetic group) [direction]
+        self.mwind_dir_to = None           # end of range for wind dir (in magnetic group) [direction]
+        self.runway = []                   # runway visibility (list of tuples)
+        self.weather = []                  # present weather (list of tuples)
+        self.recent = []                   # recent weather (list of tuples)
+        self.sky = []                      # sky conditions (list of tuples)
+        self.windshear = []                # runways w/ wind shear (list of strings)
+        self.wind_speed_peak = None        # peak wind speed in last hour
+        self.wind_dir_peak = None          # direction of peak wind speed in last hour
+        self.peak_wind_time = None         # time of peak wind observation [datetime]
+        self.wind_shift_time = None        # time of wind shift [datetime]
+        self.max_temp_6hr = None           # max temp in last 6 hours
+        self.min_temp_6hr = None           # min temp in last 6 hours
+        self.max_temp_24hr = None          # max temp in last 24 hours
+        self.min_temp_24hr = None          # min temp in last 24 hours
+        self.press_sea_level = None        # sea-level pressure
+        self.precip_1hr = None             # precipitation over the last hour
+        self.precip_3hr = None             # precipitation over the last 3 hours
+        self.precip_6hr = None             # precipitation over the last 6 hours
+        self.precip_24hr = None            # precipitation over the last 24 hours
+        self.ice_accretion_1hr = None      # ice accretion over the past hour
+        self.ice_accretion_3hr = None      # ice accretion over the past 3 hours
+        self.ice_accretion_6hr = None      # ice accretion over the past 6 hours
+        self._trend = False                # trend groups present (bool)
+        self._trend_groups = []            # trend forecast groups
+        self._remarks = []                 # remarks (list of strings)
+        self._unparsed_groups = []
+        self._unparsed_remarks = []
+
+        self._now = datetime.datetime.utcnow()
+        if utcdelta:
+          self._utcdelta = utcdelta
+        else:
+          self._utcdelta = datetime.datetime.now() - self._now
+
+        self._month = month
+        self._year = year
+
+        # Do some string prep before parsing
+        code = _sanitize(self.code)
+        try:
+            ngroup = len(self.handlers)
+            igroup = 0
+            ifailed = -1
+            while igroup < ngroup and code:
+                pattern, handler, repeatable = self.handlers[igroup]
+                if debug:
+                    _logger.debug("%s: %s", handler.__name__, code)
+                m = pattern.match(code)
+                while m:
+                    ifailed = -1
+                    if debug:
+                        _report_match(handler, m.group())
+                    handler(self,m.groupdict())
+                    code = code[m.end():]
+                    if self._trend:
+                        code = self._do_trend_handlers(code)
+                    if not repeatable:
+                        break
+
+                    if debug:
+                        _logger.debug("%s: %s", handler.__name__, code)
+                    m = pattern.match(code)
+                if not m and ifailed < 0:
+                    ifailed = igroup
+                igroup += 1
+                if igroup == ngroup and not m:
+                    pattern, handler = (UNPARSED_RE, _unparsedGroup)
+                    if debug:
+                        _logger.debug("%s: %s", handler.__name__, code)
+                    m = pattern.match(code)
+                    if debug:
+                        _report_match(handler, m.group())
+                    handler(self,m.groupdict())
+                    code = code[m.end():]
+                    igroup = ifailed
+                    ifailed = -2  # if it's still -2 when we run out of main-body
+                                  #  groups, we'll try parsing this group as a remark
+            if pattern == REMARK_RE or self.press:
+                while code:
+                    for pattern, handler in self.remark_handlers:
+                        if debug:
+                            _logger.debug("%s: %s", handler.__name__, code)
+                        m = pattern.match(code)
+                        if m:
+                            if debug:
+                                _report_match(handler, m.group())
+                            handler(self,m.groupdict())
+                            code = pattern.sub("",code,1)
+                            break
+
+        except Exception as err:
+            message = (
+                ("%s failed while processing '%s'\n\t%s"
+                 ) % (handler.__name__, code, "\n\t".join(err.args))
+            )
+            if strict:
+                raise ParserError(message)
+            else:
+                warnings.warn(message, RuntimeWarning)
+
+        if self._unparsed_groups:
+            code = ' '.join(self._unparsed_groups)
+            message = "Unparsed groups in body '%s' while processing '%s'" % (code, ASOSfivemincode)
+            # DTD: should have a separate flag for unparsed groups. Less serious error than a
+            # parsing failure
+#             if strict:
+#                 raise ParserError(message)
+            if verbose:
+                warnings.warn(message, RuntimeWarning)
+
+        # Set time to the LST time information
+        self.time = self.lst_time
+
+
+    def _handleHeader( self, d ):
+        """
+        Parse the header group, which includes the date and time information (in LST!).
+
+        The following attributes are set:
+          header   [string]
+          lst_time     [datetime]
+          _lst_year    [int]
+          _lst_month   [int]
+          _lst_day   [int]
+          _lst_hour  [int]
+          _lst_min   [int]
+        """
+        self._lst_year = int(d['lst_year'])
+        self._lst_month = int(d['lst_month'])
+        self._lst_day = int(d['lst_day'])
+        self._lst_hour = int(d['lst_hour'])
+        self._lst_min = int(d['lst_min'])
+
+        self.lst_time = datetime.datetime(self._lst_year, self._lst_month, self._lst_day,
+                                          self._lst_hour, self._lst_min)
+
+
+    def _handleTime( self, d ):
+        """
+        Parse the observation-time group.
+
+        For now, this does nothing, as UTC conversion is handled in calling program.
+        """
+        self._year = self._lst_year
+        self._month = self._lst_month
+        self._day = self._lst_day
+        self._hour = self._lst_hour
+        self._min = self._lst_min
+        self.time = self.lst_time
+
+
+    def _handlePaltitude( self, d ):
+        """
+        Parse the pressure altitude group.
+
+        The following attributes are set:
+          paltitude   [int]
+        """
+        self.paltitude = int(d['paltitude'])
+
+    def _handleRH( self, d ):
+        """
+        Parse the relative humidity group.
+
+        The following attributes are set:
+            rh [int]
+        """
+        self.rh = int(d['rh'])
+
+    def _handleDaltitude( self, d ):
+        """
+        Parse the density altitude group.
+
+        The following attributes are set:
+          daltitude   [int]
+        """
+        self.daltitude = int(d['daltitude'])
+
+    def _handleMagwind( self, d ):
+        """
+        Parse the magnetic wind and variable-wind groups.
+
+        The following attributes are set:
+          mwind_dir           [direction]
+          mwind_speed         [speed]
+          mwind_gust          [speed]
+          mwind_dir_from      [int]
+          mwind_dir_to        [int]
+        """
+        mwind_dir = d['mdir'].replace('O','0')
+        if mwind_dir != "VRB" and mwind_dir != "///" and mwind_dir != "MMM":
+          self.mwind_dir = direction(mwind_dir)
+        mwind_speed = d['mspeed'].replace('O','0')
+        units = 'KT'
+#         units = d['units']
+#         if units == 'KTS' or units == 'K' or units == 'T' or units == 'LT':
+#           units = 'KT'
+        if mwind_speed.startswith("P"):
+          self.mwind_speed = speed(mwind_speed[1:], units, ">")
+        elif not MISSING_RE.match(mwind_speed):
+          self.mwind_speed = speed(mwind_speed, units)
+        if d['mgust']:
+          mwind_gust = d['mgust']
+          if mwind_gust.startswith("P"):
+              self.mwind_gust = speed(mwind_gust[1:], units, ">")
+          elif not MISSING_RE.match(mwind_gust):
+              self.mwind_gust = speed(mwind_gust, units)
+        if d['mvarfrom']:
+          self.mwind_dir_from = direction(d['mvarfrom'])
+          self.mwind_dir_to = direction(d['mvarto'])
+
+
+    ## the list of handler functions to use (in order) to process an ASOS 5-MIN report
+
+    handlers = [ (HEADER_RE, _handleHeader, False),
+               (STATION_RE, Metar._handleStation, False),
+               (TIME_RE, _handleTime, False),
+               (MODIFIER_RE, Metar._handleModifier, False),
+               (WIND_RE, Metar._handleWind, False),
+               (VISIBILITY_RE, Metar._handleVisibility, True),
+               (WEATHER_RE, Metar._handleWeather, True),
+               (SKY_RE, Metar._handleSky, True),
+               (TEMP_RE, Metar._handleTemp, False),
+               (PRESS_RE, Metar._handlePressure, False),
+               (PALTITUDE_RE, _handlePaltitude, False),
+               (RH_RE, _handleRH, False),
+               (DALTITUDE_RE, _handleDaltitude, False),
+               (MAGWIND_RE, _handleMagwind, False),
+               (REMARK_RE, Metar._startRemarks, False) ]
